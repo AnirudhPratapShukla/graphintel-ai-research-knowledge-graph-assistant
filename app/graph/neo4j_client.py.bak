@@ -1,0 +1,192 @@
+from __future__ import annotations
+from typing import Any
+from neo4j import GraphDatabase
+from app import config
+
+class Neo4jClient:
+    def __init__(self):
+        self.driver = GraphDatabase.driver(
+            config.NEO4J_URI,
+            auth=(config.NEO4J_USERNAME, config.NEO4J_PASSWORD),
+        )
+
+    def close(self):
+        self.driver.close()
+
+    def verify(self):
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            session.run("RETURN 1").consume()
+        return True
+
+    def initialize(self):
+        queries = [
+            """CREATE CONSTRAINT entity_key IF NOT EXISTS
+               FOR (n:Entity) REQUIRE n.key IS UNIQUE""",
+            """CREATE CONSTRAINT source_url IF NOT EXISTS
+               FOR (n:Source) REQUIRE n.url IS UNIQUE""",
+            """CREATE CONSTRAINT document_key IF NOT EXISTS
+               FOR (n:Document) REQUIRE n.key IS UNIQUE""",
+            """CREATE VECTOR INDEX document_embedding IF NOT EXISTS
+               FOR (n:Document) ON (n.embedding)
+               OPTIONS {indexConfig: {
+                 `vector.dimensions`: 768,
+                 `vector.similarity_function`: 'cosine'
+               }}""",
+        ]
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            for query in queries:
+                try:
+                    session.run(query).consume()
+                except Exception:
+                    pass
+
+    def upsert_research(self, query, results, entities, relationships, embeddings):
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            for i, result in enumerate(results):
+                url = result.get("link", "")
+                title = result.get("title", "Untitled source")
+                snippet = result.get("snippet", "")
+                key = f"{query}|{url}"
+                embedding = embeddings[i] if i < len(embeddings) else []
+                session.run(
+                    """MERGE (s:Source {url:$url})
+                       SET s.title=$title, s.snippet=$snippet, s.query=$query
+                       MERGE (d:Document {key:$key})
+                       SET d.title=$title, d.content=$content, d.url=$url,
+                           d.query=$query, d.embedding=$embedding
+                       MERGE (s)-[:HAS_DOCUMENT]->(d)""",
+                    url=url, title=title, snippet=snippet, query=query,
+                    key=key, content=f"{title}\n{snippet}", embedding=embedding
+                ).consume()
+
+            for entity in entities:
+                name = entity["name"].strip()
+                if not name:
+                    continue
+                entity_type = entity.get("entity_type", "Concept")
+                session.run(
+                    """MERGE (e:Entity {key:$key})
+                       SET e.name=$name, e.entity_type=$entity_type,
+                           e.description=$description""",
+                    key=self.entity_key(name, entity_type),
+                    name=name,
+                    entity_type=entity_type,
+                    description=entity.get("description", ""),
+                ).consume()
+
+            for rel in relationships:
+                source_key = self.find_entity_key(rel["source"], entities)
+                target_key = self.find_entity_key(rel["target"], entities)
+                if not source_key or not target_key:
+                    continue
+                session.run(
+                    """MATCH (a:Entity {key:$source_key})
+                       MATCH (b:Entity {key:$target_key})
+                       MERGE (a)-[r:RELATED_TO {relation:$relation}]->(b)
+                       SET r.weight=coalesce(r.weight,0)+1""",
+                    source_key=source_key,
+                    target_key=target_key,
+                    relation=rel.get("relation", "RELATED_TO"),
+                ).consume()
+
+            # Attach extracted entities to the first source document so graph
+            # traversal can enrich vector retrieval.
+            if results:
+                url = results[0].get("link", "")
+                for entity in entities:
+                    key = self.find_entity_key(entity["name"], entities)
+                    if key:
+                        session.run(
+                            """MATCH (d:Document {url:$url})
+                               MATCH (e:Entity {key:$key})
+                               MERGE (d)-[:MENTIONS]->(e)""",
+                            url=url, key=key
+                        ).consume()
+
+    def seed_demo(self):
+        entities = [
+            ("AWS","Company"),("Kubernetes","Technology"),("Docker","Technology"),
+            ("Terraform","Technology"),("Jenkins","Technology"),("GitHub","Company"),
+            ("Helm","Technology"),("Cloud Infrastructure","Concept"),
+            ("Container Orchestration","Concept"),("Infrastructure as Code","Concept"),
+            ("CI/CD","Concept"),("DevOps","Concept")
+        ]
+        edges = [
+            ("Kubernetes","Docker","USES"),("Kubernetes","AWS","RUNS_ON"),
+            ("Terraform","AWS","PROVISIONS"),("Terraform","Cloud Infrastructure","MANAGES"),
+            ("Kubernetes","Container Orchestration","IMPLEMENTS"),
+            ("Helm","Kubernetes","PACKAGES"),("Jenkins","GitHub","INTEGRATES_WITH"),
+            ("Jenkins","CI/CD","ENABLES"),("Terraform","Infrastructure as Code","IMPLEMENTS"),
+            ("Kubernetes","DevOps","SUPPORTS"),("Docker","DevOps","SUPPORTS"),
+            ("AWS","Cloud Infrastructure","PROVIDES")
+        ]
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            for name, kind in entities:
+                session.run(
+                    """MERGE (e:Entity {key:$key})
+                       SET e.name=$name, e.entity_type=$kind,
+                           e.description=$description""",
+                    key=self.entity_key(name, kind), name=name, kind=kind,
+                    description=f"Demo knowledge graph entity: {name}"
+                ).consume()
+            for source, target, relation in edges:
+                session.run(
+                    """MATCH (a:Entity {name:$source})
+                       MATCH (b:Entity {name:$target})
+                       MERGE (a)-[r:RELATED_TO {relation:$relation}]->(b)
+                       SET r.weight=coalesce(r.weight,1)""",
+                    source=source, target=target, relation=relation
+                ).consume()
+
+    def fetch_graph(self, max_nodes=None):
+        max_nodes = max_nodes or config.GRAPH_MAX_NODES
+        with self.driver.session(database=config.NEO4J_DATABASE) as session:
+            nodes = session.run(
+                """MATCH (n:Entity)
+                   OPTIONAL MATCH (n)-[r:RELATED_TO]-()
+                   WITH n,count(r) AS degree
+                   ORDER BY degree DESC LIMIT $limit
+                   RETURN elementId(n) AS id,n.name AS name,
+                          n.entity_type AS entity_type,
+                          n.description AS description,degree""",
+                limit=max_nodes
+            ).data()
+            ids = [n["id"] for n in nodes]
+            if not ids:
+                return {"nodes": [], "relationships": []}
+            rels = session.run(
+                """MATCH (a:Entity)-[r:RELATED_TO]->(b:Entity)
+                   WHERE elementId(a) IN $ids AND elementId(b) IN $ids
+                   RETURN elementId(a) AS source,elementId(b) AS target,
+                          r.relation AS relation,coalesce(r.weight,1) AS weight
+                   LIMIT $limit""",
+                ids=ids, limit=config.GRAPH_MAX_RELATIONSHIPS
+            ).data()
+        return {
+            "nodes": [
+                {"id": n["id"], "name": n["name"],
+                 "entity_type": n["entity_type"],
+                 "description": n["description"] or "",
+                 "degree": n["degree"]}
+                for n in nodes
+            ],
+            "relationships": [
+                {"source": r["source"], "target": r["target"],
+                 "relation": r["relation"], "weight": r["weight"]}
+                for r in rels
+            ]
+        }
+
+    @staticmethod
+    def entity_key(name, entity_type):
+        return f"{entity_type.lower()}::{name.strip().lower()}"
+
+    def find_entity_key(self, name, entities):
+        for entity in entities:
+            if entity["name"].strip().lower() == name.strip().lower():
+                return self.entity_key(
+                    entity["name"], entity.get("entity_type", "Concept")
+                )
+        return None
+
+neo4j_client = Neo4jClient()

@@ -1,0 +1,124 @@
+import {useEffect, useRef} from 'react'
+import cytoscape from 'cytoscape'
+import fcose from 'cytoscape-fcose'
+
+cytoscape.use(fcose)
+
+const palette = {
+  Technology:'#7c3aed',
+  Company:'#0ea5e9',
+  Concept:'#10b981',
+  Person:'#f59e0b',
+  Product:'#ec4899',
+  Service:'#ef4444'
+}
+
+export default function GraphViewer({
+  graph, edgeLength, nodeSize, selectedTypes, layoutName, onSelectNode
+}) {
+  const containerRef = useRef(null)
+  const cyRef = useRef(null)
+
+  useEffect(() => {
+    if (!containerRef.current) return
+    if (cyRef.current) cyRef.current.destroy()
+
+    const elements = [
+      ...(graph?.nodes || []).map(node => ({
+        data:{
+          ...node,
+          color:palette[node.entity_type] || '#94a3b8'
+        }
+      })),
+      ...(graph?.relationships || []).map((rel,index) => ({
+        data:{
+          id:`rel-${index}-${rel.source}-${rel.target}`,
+          source:rel.source,
+          target:rel.target,
+          relation:rel.relation,
+          weight:rel.weight || 1
+        }
+      }))
+    ]
+
+    const cy = cytoscape({
+      container:containerRef.current,
+      elements,
+      minZoom:.25,
+      maxZoom:4,
+      wheelSensitivity:.15,
+      style:[
+        {
+          selector:'node',
+          style:{
+            'background-color':'data(color)',
+            label:'data(name)',
+            color:'#e5e7eb',
+            'font-size':11,
+            'font-weight':600,
+            'text-wrap':'ellipsis',
+            'text-max-width':100,
+            'text-outline-color':'#0b1020',
+            'text-outline-width':3,
+            width:`mapData(degree,0,10,${nodeSize*.55},${nodeSize*1.7})`,
+            height:`mapData(degree,0,10,${nodeSize*.55},${nodeSize*1.7})`,
+            'border-width':2,
+            'border-color':'#ffffff22'
+          }
+        },
+        {
+          selector:'edge',
+          style:{
+            width:'mapData(weight,1,5,1,4)',
+            'line-color':'#64748b',
+            'target-arrow-color':'#64748b',
+            'target-arrow-shape':'triangle',
+            'curve-style':'bezier',
+            label:'data(relation)',
+            color:'#94a3b8',
+            'font-size':8,
+            'text-background-color':'#0b1020',
+            'text-background-opacity':.75,
+            'text-background-padding':2
+          }
+        },
+        {
+          selector:'node:selected',
+          style:{
+            'border-color':'#ffffff',
+            'border-width':4,
+            'overlay-color':'#ffffff',
+            'overlay-opacity':.12
+          }
+        },
+        {
+          selector:'.faded',
+          style:{opacity:.12}
+        }
+      ],
+      layout:{
+        name:layoutName === 'fcose' ? 'fcose' : layoutName,
+        animate:true,
+        animationDuration:650,
+        randomize:true,
+        idealEdgeLength:edgeLength,
+        nodeRepulsion:7000,
+        edgeElasticity:.35,
+        gravity:.2
+      }
+    })
+
+    cy.on('tap','node',event => onSelectNode(event.target.data()))
+    cyRef.current = cy
+    return () => cy.destroy()
+  }, [graph, edgeLength, nodeSize, layoutName, onSelectNode])
+
+  useEffect(() => {
+    if (!cyRef.current) return
+    cyRef.current.nodes().forEach(node => {
+      node.toggleClass('faded', !selectedTypes.includes(node.data('entity_type')))
+    })
+  }, [selectedTypes])
+
+  return <div ref={containerRef} className="graph-canvas" />
+}

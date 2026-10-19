@@ -1,0 +1,38 @@
+import {useState} from 'react'
+
+export default function ChatPanel({onAsk,loading,answer,evidence}) {
+  const [question,setQuestion] = useState(
+    'How are Kubernetes, Docker, AWS and Terraform connected?'
+  )
+  async function submit(e) {
+    e.preventDefault()
+    if (question.trim()) await onAsk(question)
+  }
+  return (
+    <section className="chat-panel panel">
+      <div className="panel-title">GraphRAG analyst</div>
+      <form onSubmit={submit} className="question-form">
+        <textarea value={question} onChange={e=>setQuestion(e.target.value)}
+          rows={3} placeholder="Ask a relationship-aware question..."/>
+        <button className="primary-btn" disabled={loading}>
+          {loading ? 'Thinking…' : 'Ask GraphRAG'}
+        </button>
+      </form>
+      <div className="answer-box">
+        <div className="eyebrow">Answer</div>
+        <div className="answer-text">
+          {answer || 'Ask a question to generate a graph-aware answer.'}
+        </div>
+      </div>
+      <div className="evidence">
+        <div className="eyebrow">Evidence</div>
+        {evidence?.length ? evidence.slice(0,4).map((item,i)=>(
+          <div className="evidence-item" key={i}>
+            <strong>{item.title || item.name || `Evidence ${i+1}`}</strong>
+            {item.url && <a href={item.url} target="_blank">{item.url}</a>}
+          </div>
+        )) : <div className="muted">Retrieved graph context will appear here.</div>}
+      </div>
+    </section>
+  )
+}

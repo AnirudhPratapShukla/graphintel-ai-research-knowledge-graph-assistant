@@ -1,0 +1,138 @@
+import {useCallback,useEffect,useMemo,useState} from 'react'
+import {api} from './lib/api'
+import GraphViewer from './components/GraphViewer'
+import ControlPanel from './components/ControlPanel'
+import ChatPanel from './components/ChatPanel'
+import NodeInspector from './components/NodeInspector'
+
+const defaultTypes=['Technology','Company','Concept','Person','Product','Service']
+
+export default function App() {
+  const [graph,setGraph]=useState({nodes:[],relationships:[]})
+  const [query,setQuery]=useState('Kubernetes AWS Terraform Docker')
+  const [selectedNode,setSelectedNode]=useState(null)
+  const [selectedTypes,setSelectedTypes]=useState(defaultTypes)
+  const [edgeLength,setEdgeLength]=useState(150)
+  const [nodeSize,setNodeSize]=useState(32)
+  const [layoutName,setLayoutName]=useState('fcose')
+  const [answer,setAnswer]=useState('')
+  const [evidence,setEvidence]=useState([])
+  const [loading,setLoading]=useState(false)
+  const [status,setStatus]=useState('Connecting…')
+  const [message,setMessage]=useState('')
+
+  const refreshGraph=useCallback(async()=>{
+    const data=await api.graph()
+    setGraph(data)
+  },[])
+
+  useEffect(()=>{
+    api.health()
+      .then(d=>setStatus(d.neo4j?'Graph connected':'API online · Neo4j offline'))
+      .catch(()=>setStatus('Backend offline'))
+    refreshGraph().catch(()=>{})
+  },[refreshGraph])
+
+  async function research() {
+    if (!query.trim()) return
+    setLoading(true); setMessage('Searching the web and updating the graph…')
+    try {
+      const data=await api.research(query)
+      setGraph(data.graph)
+      setMessage(`Added ${data.entities} entities, ${data.relationships} relationships from ${data.sources} sources.`)
+    } catch(e) { setMessage(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function loadDemo() {
+    setLoading(true); setMessage('Loading interactive demo graph…')
+    try {
+      const data=await api.seedDemo()
+      setGraph(data.graph)
+      setMessage('Demo graph loaded. Move the sliders and click nodes.')
+    } catch(e) { setMessage(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function ask(question) {
+    setLoading(true); setMessage('Running vector + graph retrieval…')
+    try {
+      const data=await api.ask(question)
+      setAnswer(data.answer); setEvidence(data.evidence || [])
+      setGraph(data.graph)
+      setMessage('GraphRAG answer generated from Neo4j context.')
+    } catch(e) { setMessage(e.message) }
+    finally { setLoading(false) }
+  }
+
+  function toggleType(type) {
+    setSelectedTypes(current =>
+      current.includes(type) ? current.filter(x=>x!==type) : [...current,type]
+    )
+  }
+
+  const types=useMemo(()=>{
+    const found=new Set(graph.nodes.map(n=>n.entity_type))
+    return defaultTypes.filter(t=>found.has(t))
+  },[graph.nodes])
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <div className="brand">Graph<span>Intel</span></div>
+          <div className="subtitle">Interactive GraphRAG Research Command Center</div>
+        </div>
+        <div className="status-pill"><span className="status-dot"/>{status}</div>
+      </header>
+
+      <main className="main-content">
+        <section className="hero panel">
+          <div>
+            <div className="eyebrow">Knowledge graph research</div>
+            <h1>Explore knowledge as a living graph.</h1>
+            <p>Search the web, extract relationships, ask GraphRAG questions, and manipulate the graph in real time.</p>
+          </div>
+          <div className="research-box">
+            <input value={query} onChange={e=>setQuery(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&research()}
+              placeholder="Search a technology topic..."/>
+            <button className="secondary-btn" onClick={research} disabled={loading}>Research</button>
+            <button className="ghost-btn" onClick={loadDemo} disabled={loading}>Load Demo</button>
+          </div>
+        </section>
+
+        <div className="workspace">
+          <ControlPanel
+            edgeLength={edgeLength} setEdgeLength={setEdgeLength}
+            nodeSize={nodeSize} setNodeSize={setNodeSize}
+            layoutName={layoutName} setLayoutName={setLayoutName}
+            selectedTypes={selectedTypes} toggleType={toggleType} types={types}
+          />
+
+          <section className="graph-panel panel">
+            <div className="graph-toolbar">
+              <div>
+                <div className="panel-title">Live knowledge graph</div>
+                <div className="muted">{graph.nodes.length} nodes · {graph.relationships.length} relationships</div>
+              </div>
+              <div className="toolbar-hint">Drag · zoom · click · filter</div>
+            </div>
+            <GraphViewer
+              graph={graph} edgeLength={edgeLength} nodeSize={nodeSize}
+              selectedTypes={selectedTypes} layoutName={layoutName}
+              onSelectNode={setSelectedNode}
+            />
+          </section>
+
+          <div className="right-column">
+            <NodeInspector node={selectedNode}/>
+            <ChatPanel onAsk={ask} loading={loading} answer={answer} evidence={evidence}/>
+          </div>
+        </div>
+
+        {message && <div className="toast">{message}</div>}
+      </main>
+    </div>
+  )
+}

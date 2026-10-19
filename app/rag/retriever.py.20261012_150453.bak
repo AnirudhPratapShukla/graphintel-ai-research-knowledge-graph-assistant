@@ -1,0 +1,48 @@
+﻿from neo4j_graphrag.retrievers import VectorCypherRetriever
+from neo4j_graphrag.embeddings import OllamaEmbeddings
+from app import config
+from app.graph.neo4j_client import neo4j_client
+
+
+class GraphRetriever:
+    def __init__(self):
+        embedder = OllamaEmbeddings(
+            model=config.OLLAMA_EMBED_MODEL,
+            host=config.OLLAMA_HOST,
+        )
+
+        retrieval_query = """
+        RETURN
+          node.title AS title,
+          node.content AS content,
+          node.url AS url,
+          score,
+          collect {
+            MATCH (node)-[:MENTIONS]->(e:Entity)
+            RETURN {name:e.name,type:e.entity_type,description:e.description}
+          } AS entities,
+          collect {
+            MATCH (node)-[:MENTIONS]->(e:Entity)
+            MATCH (e)-[r:RELATED_TO]-(neighbor:Entity)
+            RETURN {source:e.name,relation:r.relation,target:neighbor.name}
+            LIMIT 20
+          } AS relationships
+        """
+
+        self.retriever = VectorCypherRetriever(
+            driver=neo4j_client.driver,
+            index_name="document_embedding",
+            retrieval_query=retrieval_query,
+            embedder=embedder,
+            neo4j_database=config.NEO4J_DATABASE,
+        )
+
+
+_retriever = None
+
+
+def get_retriever():
+    global _retriever
+    if _retriever is None:
+        _retriever = GraphRetriever()
+    return _retriever

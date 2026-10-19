@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.env
+web-ui/node_modules/
+web-ui/dist/
+*.log
+
+# GraphIntel local files and secrets
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+web-ui/node_modules/
+web-ui/dist/
+backups/
+__pycache__/
+.pytest_cache/
+*.log

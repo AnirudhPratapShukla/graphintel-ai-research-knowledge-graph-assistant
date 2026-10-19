@@ -1,0 +1,10 @@
+fastapi>=0.116,<1
+uvicorn[standard]>=0.35,<1
+python-dotenv>=1.1,<2
+neo4j>=5.28,<7
+neo4j-graphrag>=1.8,<2
+ollama>=0.5,<1
+serpapi>=0.1.5,<1
+pydantic>=2.11,<3
+httpx>=0.28,<1
+pytest>=8,<9
